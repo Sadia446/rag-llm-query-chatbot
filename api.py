@@ -1,12 +1,10 @@
 import subprocess
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import json
 
 from langchain_chroma import Chroma
 from langchain_core.prompts.chat import ChatPromptTemplate
@@ -17,7 +15,7 @@ from populate_database import load_documents, split_documents, add_to_chroma
 
 CHROMA_PATH = "chroma"
 DATA_PATH = "data"
-DEFAULT_MODEL = "mistral"
+DEFAULT_MODEL = "gemma4:31b-cloud"
 
 PROMPT_TEMPLATE = """
 Answer the question based only on the following context:
@@ -73,7 +71,9 @@ def list_ollama_models() -> list[str]:
             ["ollama", "list"], capture_output=True, text=True, timeout=5
         )
         lines = result.stdout.strip().splitlines()[1:]  # skip header row
-        models = [line.split()[0] for line in lines if line.strip()]
+        # Exclude mistral from the UI list.
+        hidden = {"mistral:latest"}
+        models = [line.split()[0] for line in lines if line.strip() and line.split()[0] not in hidden]
         return models or [DEFAULT_MODEL]
     except Exception:
         return [DEFAULT_MODEL]
@@ -107,23 +107,18 @@ def health():
     return {"status": "ok", "documents_indexed": len(count["ids"])}
 
 
-@app.post("/query")
-async def query(request_data: QueryRequest, request: Request):
-    if not request_data.query_text.strip():
+@app.post("/query", response_model=QueryResponse)
+def query(request: QueryRequest):
+    if not request.query_text.strip():
         raise HTTPException(status_code=400, detail="query_text cannot be empty")
 
     search_filter = None
-    if request_data.source:
-        matches = [
-            Path(m["source"]).name
-            for m in db.get(include=["metadatas"])["metadatas"]
-            if m and m.get("source")
-        ]
+    if request.source:
         full_path = next(
             (
                 m["source"]
                 for m in db.get(include=["metadatas"])["metadatas"]
-                if m and Path(m["source"]).name == request_data.source
+                if m and Path(m["source"]).name == request.source
             ),
             None,
         )
@@ -131,7 +126,7 @@ async def query(request_data: QueryRequest, request: Request):
             search_filter = {"source": full_path}
 
     results = db.similarity_search_with_score(
-        request_data.query_text, k=request_data.k, filter=search_filter
+        request.query_text, k=request.k, filter=search_filter
     )
 
     if not results:
@@ -142,36 +137,28 @@ async def query(request_data: QueryRequest, request: Request):
 
     context_text = "\n\n---\n\n".join([doc.page_content for doc, _score in results])
     prompt_template = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    prompt = prompt_template.format(context=context_text, question=request_data.query_text)
+    prompt = prompt_template.format(context=context_text, question=request.query_text)
+
+    try:
+        model = OllamaLLM(model=request.model)
+        response_text = model.invoke(prompt)
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama model '{request.model}' failed to respond: {e}",
+        )
 
     chunks = [
-        {
-            "id": doc.metadata.get("id", "unknown"),
-            "content": doc.page_content,
-            "score": float(score),
-            "source": Path(doc.metadata.get("source", "unknown")).name,
-        }
+        ChunkResult(
+            id=doc.metadata.get("id", "unknown"),
+            content=doc.page_content,
+            score=float(score),
+            source=Path(doc.metadata.get("source", "unknown")).name,
+        )
         for doc, score in results
     ]
 
-    async def generate_response():
-        # First send the chunks as a JSON event
-        yield f"data: {json.dumps({'type': 'sources', 'chunks': chunks})}\n\n"
-
-        try:
-            model = OllamaLLM(model=request_data.model)
-            # Use stream() to get tokens in real-time
-            for chunk in model.stream(prompt):
-                if await request.is_disconnected():
-                    break
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-            
-            # Send an explicit done event
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
-            
-    return StreamingResponse(generate_response(), media_type="text/event-stream")
+    return QueryResponse(response=response_text, chunks=chunks)
 
 
 @app.post("/upload")
@@ -197,7 +184,3 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 # Serve the frontend last, so it doesn't shadow the API routes above.
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)
