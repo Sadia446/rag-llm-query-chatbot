@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  A full-stack Retrieval-Augmented Generation (RAG) application built with <b>FastAPI, LangChain, Chroma & Ollama</b> — enabling intelligent document search and context-aware question answering.
+  A full-stack Retrieval-Augmented Generation (RAG) application built with <b>FastAPI, LangChain, Chroma & Ollama</b> — enabling intelligent document search and context-aware question answering..
 </p>
 
 ---
