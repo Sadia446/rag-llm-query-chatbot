@@ -18,7 +18,7 @@ def test_monopoly_rules():
 
 def test_ticket_to_ride_rules():
     assert query_and_validate(
-        question="How many points does the longest continuous train get in Ticket to Ride? (Answer with the number only)",
+        question="How many Points does the longest continuous train get in Ticket to Ride? (Answer with the number only)",
         expected_response="10 points",
     )
 
