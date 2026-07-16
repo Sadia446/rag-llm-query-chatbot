@@ -47,7 +47,7 @@
 |  Model Selection | Switch between available Ollama models on-the-fly |
 |  Source Filtering | Query specific documents or all indexed PDFs |
 |  Conversation History | Track query history within a session |
-|  Web UI | Modern, responsive interface with dark/light mode |
+|  Web UI | Modern, responsive interface |
 |  REST API | Full API for programmatic access |
 
 ---
